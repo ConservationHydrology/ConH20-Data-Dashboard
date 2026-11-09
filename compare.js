@@ -55,6 +55,11 @@
   function msStr(ms) { return new Date(ms).toISOString().replace("T", " ").slice(0, 19); }
   function fmt(v) { return v === null || v === undefined || isNaN(v) ? "n/a" : Number(v).toFixed(2); }
   function appliesTo(col, type) { var m = metricByCol[col]; return !!m && m.types.indexOf(type) !== -1; }
+  function escapeText(s) { return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
+  function hexToRgba(hex, a) {
+    var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+    return m ? "rgba(" + parseInt(m[1], 16) + "," + parseInt(m[2], 16) + "," + parseInt(m[3], 16) + "," + a + ")" : hex;
+  }
 
   // ---- loading the chart library and each site's data, on demand ----------
   function loadScript(src, onload, onerror) {
@@ -90,6 +95,66 @@
     var d = DATA[id];
     if (!d._ms) d._ms = d.dates.map(toMs);
     return d._ms;
+  }
+
+  // ---- provisional data (approved_through in the R SETTINGS) ------------------
+  // Readings after a site's approved-through date sit on a light band; where
+  // the sites shown were approved to different dates, the band is lighter
+  // until the last of them and names the sites still provisional there.
+  var PROV_ALL = "rgba(247,248,245,0.08)", PROV_SOME = "rgba(247,248,245,0.05)", PROV_EDGE = "rgba(247,248,245,0.45)";
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function fmtDay(ms) { var d = new Date(ms); return MONTHS[d.getUTCMonth()] + " " + d.getUTCDate() + ", " + d.getUTCFullYear(); }
+  function cutoffMs(id, col) {
+    var a = byId[id] && byId[id].approved, s = a && !Array.isArray(a) ? a[col] : null;
+    return s ? toMs(s) : null;
+  }
+  // First and last reading times of one metric at one site.
+  function span(id, col) {
+    var d = DATA[id];
+    d._span = d._span || {};
+    if (!d._span[col]) {
+      var t = msDates(id), v = d.metrics[col] || [], first = null, last = null;
+      for (var j = 0; j < t.length; j++) if (v[j] !== null) { if (first === null) first = t[j]; last = t[j]; }
+      d._span[col] = { first: first, last: last };
+    }
+    return d._span[col];
+  }
+  // A site's approved-through date for a metric, only when it has readings after it.
+  function provFrom(id, col) {
+    var c = cutoffMs(id, col);
+    if (c === null || !DATA[id] || !hasMetric(id, col)) return null;
+    return span(id, col).last > c ? c : null;
+  }
+  // One metric panel's bands: one per distinct approved-through date among
+  // the sites shown, running to the next such date (or the end of the
+  // window), each listing the sites still provisional in it.
+  function bandSegments(ids, col, win) {
+    var withM = ids.filter(function (id) { return hasMetric(id, col); });
+    var cuts = [];
+    withM.forEach(function (id) { var c = provFrom(id, col); if (c !== null && cuts.indexOf(c) === -1) cuts.push(c); });
+    cuts.sort(function (a, b) { return a - b; });
+    return cuts.map(function (c, j) {
+      var prov = withM.filter(function (id) { var p = provFrom(id, col); return p !== null && p <= c; });
+      return { start: Math.max(c, win[0]), end: j + 1 < cuts.length ? cuts[j + 1] : win[1],
+               edge: c > win[0] ? c : null, all: prov.length === withM.length, ids: prov };
+    }).filter(function (s) { return s.end > s.start; });
+  }
+  // " (provisional)" / " (partly provisional)" for a Year selector entry,
+  // judged on the ticked metrics of the sites selected.
+  function yearSuffix(r0, r1) {
+    var pairs = [];
+    state.selected.forEach(function (id) {
+      if (!DATA[id]) return;
+      CFG.metrics.forEach(function (m) {
+        if (state.metrics.indexOf(m.col) === -1 || !hasMetric(id, m.col)) return;
+        var sp = span(id, m.col);
+        if (sp.first > r1 || sp.last < r0) return;
+        pairs.push({ c: cutoffMs(id, m.col), first: sp.first, last: sp.last });
+      });
+    });
+    if (!pairs.some(function (p) { return p.c !== null && p.c < Math.min(r1, p.last); })) return "";
+    var all = pairs.every(function (p) { return p.c !== null && p.c < Math.max(r0, p.first); });
+    return all ? " (provisional)" : " (partly provisional)";
   }
 
   // ---- selection -------------------------------------------------------------
@@ -153,7 +218,8 @@
     for (var wy = waterYearOf(win[1]); wy >= waterYearOf(win[0]); wy--) {
       var r = clip([Date.UTC(wy, 0, 1), Date.UTC(wy, 11, 31, 23, 59, 59)], win) ||
               clip([Date.UTC(wy - 1, 9, 1), Date.UTC(wy, 8, 30, 23, 59, 59)], win);
-      if (r) out.push({ id: "wy" + wy, label: "WY" + wy, range: r });
+      if (r) out.push({ id: "wy" + wy, range: r,
+        label: "WY" + wy + yearSuffix(Date.UTC(wy - 1, 9, 1), Date.UTC(wy, 8, 30, 23, 59, 59)) });
     }
     return out;
   }
@@ -218,6 +284,14 @@
     state.selected.forEach(function (id) {
       box.appendChild(h("span", null, [swatch(id), byId[id].label]));
     });
+  }
+  // Keys for the provisional bands on the chart, after the site keys.
+  function renderBandLegend(kinds) {
+    var box = $("tu-cmp-legend");
+    if (kinds.all) box.appendChild(h("span", null,
+      [h("span", { class: "tu-band-swatch", "aria-hidden": "true" }), CFG.provisionalLabel || "Provisional"]));
+    if (kinds.some) box.appendChild(h("span", null,
+      [h("span", { class: "tu-band-swatch is-some", "aria-hidden": "true" }), "Provisional for some sites"]));
   }
 
   // ---- chart -------------------------------------------------------------------
@@ -290,10 +364,27 @@
     var meta = gd._tuMeta, L = gd._fullLayout;
     if (!meta || !L || !L.xaxis) return;
     var x0 = L.xaxis.r2l(L.xaxis.range[0]), x1 = L.xaxis.r2l(L.xaxis.range[1]);
-    var anns = [];
+    var anns = [], prevSig = null;
     meta.metrics.forEach(function (m, i) {
       var key = i === 0 ? "yaxis" : "yaxis" + (i + 1), ref = i === 0 ? "y" : "y" + (i + 1), ax = L[key];
       if (!ax) return;
+      // Provisional band labels, at the top-left of each band in view. A
+      // panel whose bands match the panel above it is left unlabeled.
+      var segs = (meta.bands && meta.bands[i]) || [];
+      var sig = segs.map(function (s) { return s.start + ":" + s.ids.join(","); }).join("|");
+      if (sig !== prevSig) {
+        segs.forEach(function (s) {
+          var a = Math.max(s.start, x0), b = Math.min(s.end, x1);
+          if (b <= a) return;
+          var text = s.all ? (CFG.provisionalLabel || "Provisional") : s.ids.join(", ") + " provisional";
+          if (L.xaxis.l2p(b) - L.xaxis.l2p(a) < text.length * 6.5 + 16) return;
+          anns.push({ xref: "paper", x: (a - x0) / (x1 - x0), xanchor: "left", xshift: 4,
+            yref: "paper", y: ax.domain[1], yanchor: "top", yshift: -4, showarrow: false,
+            text: escapeText(text), bgcolor: hexToRgba(T.bg, 0.8),
+            font: { family: FONT, color: T.text, size: 11 } });
+        });
+      }
+      prevSig = sig;
       var items = [];
       meta.ids.forEach(function (id) {
         if (!hasMetric(id, m.col)) return;
@@ -324,7 +415,7 @@
     var gd = $("tu-cmp-chart");
     var n = metrics.length, gap = 0.012, mt = 20, mb = 70;
     var plotPx = Math.max(n, 4) * CFG.panelHeight;
-    var traces = [], shapes = [];
+    var traces = [], shapes = [], bands = [], kinds = { all: false, some: false };
     var layout = {
       height: plotPx + mt + mb, margin: { l: 90, r: 96, t: mt, b: mb },
       paper_bgcolor: T.bg, plot_bgcolor: T.bg, font: { family: FONT, color: T.text },
@@ -342,14 +433,31 @@
         line: { color: T.border, width: 1.2 }, fillcolor: "rgba(0,0,0,0)", layer: "above" });
       if (i < n - 1) shapes.push({ type: "line", xref: "paper", yref: "paper", x0: 0, x1: 1,
         y0: bottom - gap / 2, y1: bottom - gap / 2, line: { color: T.border, width: 0.75 } });
+      var segs = bandSegments(ids, m.col, win);
+      bands.push(segs);
+      segs.forEach(function (s) {
+        shapes.push({ type: "rect", xref: "x", yref: ref + " domain", x0: msStr(s.start), x1: msStr(s.end),
+          y0: 0, y1: 1, fillcolor: s.all ? PROV_ALL : PROV_SOME, line: { width: 0 }, layer: "below" });
+        if (s.edge !== null) shapes.push({ type: "line", xref: "x", yref: ref + " domain", x0: msStr(s.edge),
+          x1: msStr(s.edge), y0: 0, y1: 1, line: { color: PROV_EDGE, width: 1 }, layer: "below" });
+        if (s.all) kinds.all = true; else kinds.some = true;
+      });
       ids.forEach(function (id) {
         if (!hasMetric(id, m.col)) return;
-        traces.push({ x: DATA[id].dates, y: DATA[id].metrics[m.col], type: "scatter", mode: "lines",
+        var tr = { x: DATA[id].dates, y: DATA[id].metrics[m.col], type: "scatter", mode: "lines",
           name: id, xaxis: "x", yaxis: ref, connectgaps: false, showlegend: false,
           line: { color: colorOf(id), width: dashOf(id) === "solid" ? 1.8 : 2.2, dash: dashOf(id) },
-          hovertemplate: "<b>" + id + "</b>  " + m.label + ": %{y:.2f}<extra></extra>" });
+          hovertemplate: "<b>" + id + "</b>  " + m.label + ": %{y:.2f}<extra></extra>" };
+        // Provisional readings say so when hovered.
+        var pc = provFrom(id, m.col);
+        if (pc !== null) {
+          tr.customdata = msDates(id).map(function (t) { return t > pc ? " (provisional)" : ""; });
+          tr.hovertemplate = "<b>" + id + "</b>  " + m.label + ": %{y:.2f}%{customdata}<extra></extra>";
+        }
+        traces.push(tr);
       });
     });
+    renderBandLegend(kinds);
     var bounds = [msStr(win[0]), msStr(win[1])];
     layout.shapes = shapes;
     layout.xaxis = { anchor: n === 1 ? "y" : "y" + n, gridcolor: T.grid, fixedrange: false,
@@ -357,7 +465,7 @@
       range: [msStr(view[0]), msStr(view[1])], minallowed: bounds[0], maxallowed: bounds[1],
       rangeslider: { visible: true, thickness: 0.08, bgcolor: T.bg, range: bounds.slice() } };
     cmpBounds = bounds;
-    gd._tuMeta = { ids: ids, metrics: metrics };
+    gd._tuMeta = { ids: ids, metrics: metrics, bands: bands };
     gd.style.height = layout.height + "px";
     attachDomListeners(gd);
     Plotly.newPlot(gd, traces, layout, { scrollZoom: true, displaylogo: false, responsive: true,
@@ -369,14 +477,15 @@
   // ---- summary table ---------------------------------------------------------
   function stats(id, col, r0, r1) {
     if (!hasMetric(id, col)) return null;
-    var t = msDates(id), v = DATA[id].metrics[col], mn = Infinity, mx = -Infinity, latest = null;
+    var t = msDates(id), v = DATA[id].metrics[col], mn = Infinity, mx = -Infinity, latest = null, latestT = null;
     for (var j = 0; j < t.length; j++) {
       if (v[j] === null || t[j] < r0 || t[j] > r1) continue;
       if (v[j] < mn) mn = v[j];
       if (v[j] > mx) mx = v[j];
       latest = v[j];
+      latestT = t[j];
     }
-    return latest === null ? null : { latest: latest, min: mn, max: mx };
+    return latest === null ? null : { latest: latest, latestT: latestT, min: mn, max: mx };
   }
   function renderSummary(ids, metrics, yr) {
     var box = $("tu-cmp-summary");
@@ -391,14 +500,23 @@
         [h("span", { text: "Site" }), h("span", { text: "Latest" }), h("span", { text: "Min" }), h("span", { text: "Max" })]));
       // Only sites that measure this metric at all (a well isn't listed under
       // Streamflow); one with no readings in the chosen year shows n/a.
-      ids.filter(function (id) { return hasMetric(id, m.col); }).forEach(function (id) {
-        var st = stats(id, m.col, yr.range[0], yr.range[1]);
+      // Each site's approved-through date sits under its ID; a note says
+      // when the latest value shown is provisional.
+      var listed = ids.filter(function (id) { return hasMetric(id, m.col); }), provLatest = [];
+      listed.forEach(function (id) {
+        var st = stats(id, m.col, yr.range[0], yr.range[1]), c = cutoffMs(id, m.col);
+        if (st && c !== null && st.latestT > c) provLatest.push(id);
         sec.appendChild(h("div", { class: "tu-stat-row" }, [
           h("span", { class: "tu-stat-site", title: byId[id].label }, [swatch(id), h("span", { text: id })]),
           h("span", { class: "tu-strong", text: st ? fmt(st.latest) : "n/a" }),
           h("span", { text: st ? fmt(st.min) : "n/a" }),
-          h("span", { text: st ? fmt(st.max) : "n/a" })]));
+          h("span", { text: st ? fmt(st.max) : "n/a" }),
+          c !== null ? h("span", { class: "tu-stat-sub", text: "Approved through " + fmtDay(c) }) : null]));
       });
+      if (provLatest.length) {
+        sec.appendChild(h("p", { class: "tu-stat-note", text: (provLatest.length === listed.length
+          ? "Latest values are" : "Latest values for " + provLatest.join(", ") + " are") + " provisional, subject to revision." }));
+      }
       box.appendChild(sec);
     });
   }

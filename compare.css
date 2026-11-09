@@ -55,3 +55,9 @@
 .tu-stat-head span + span, .tu-stat-row span + span { text-align: right; }
 .tu-stat-site { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .tu-strong { font-weight: 700; }
+.tu-stat-row { row-gap: 3px; }
+.tu-stat-row .tu-stat-sub { grid-column: 1 / -1; padding-left: 28px; font-size: 11px; text-align: left; color: var(--tu-label); }
+.tu-stat-note { margin: 8px 0 0 0; font-size: 12px; color: var(--tu-label); }
+.tu-band-swatch { display: inline-block; flex: none; width: 22px; height: 14px; box-sizing: border-box;
+          background: rgba(247,248,245,0.08); border-left: 1px solid rgba(247,248,245,0.45); }
+.tu-band-swatch.is-some { background: rgba(247,248,245,0.05); }
