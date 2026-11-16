@@ -58,6 +58,22 @@
 .tu-stat-row { row-gap: 3px; }
 .tu-stat-row .tu-stat-sub { grid-column: 1 / -1; padding-left: 28px; font-size: 11px; text-align: left; color: var(--tu-label); }
 .tu-stat-note { margin: 8px 0 0 0; font-size: 12px; color: var(--tu-label); }
+.tu-stat-def { margin: -4px 0 10px 0; font-size: 12px; line-height: 1.4; color: var(--tu-label); }
+.tu-seg { display: inline-flex; border: 1px solid var(--tu-border); border-radius: 6px; overflow: hidden; }
+.tu-seg button { min-height: 44px; padding: 0 16px; font: inherit; font-size: 14px; color: var(--tu-text);
+          background: transparent; border: 0; cursor: pointer; }
+.tu-seg button[aria-pressed="true"] { font-weight: 700; color: var(--tu-bg); background: var(--tu-text); }
+.tu-seg button:focus-visible { outline: 2px solid var(--tu-text); outline-offset: -4px; }
+.tu-vol-row { display: flex; flex-direction: column; gap: 5px; margin-bottom: 12px; font-size: 13px; }
+.tu-vol-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.tu-vol-track { height: 12px; background: rgba(247,248,245,0.06); border-radius: 0 4px 4px 0; }
+.tu-vol-bar { height: 100%; border-radius: 0 4px 4px 0; background: var(--c); }
+.tu-vol-bar.is-partial { box-sizing: border-box; border: 1.5px solid var(--c);
+          background: repeating-linear-gradient(135deg, var(--c) 0 2px, transparent 2px 5px); }
+.tu-vol-sub { font-size: 12px; color: var(--tu-label); }
+.tu-hatch-swatch { display: inline-block; flex: none; width: 14px; height: 12px; box-sizing: border-box; border-radius: 2px;
+          border: 1.5px solid var(--tu-label);
+          background: repeating-linear-gradient(135deg, var(--tu-label) 0 2px, transparent 2px 5px); }
 .tu-band-swatch { display: inline-block; flex: none; width: 22px; height: 14px; box-sizing: border-box;
           background: rgba(247,248,245,0.08); border-left: 1px solid rgba(247,248,245,0.45); }
 .tu-band-swatch.is-some { background: rgba(247,248,245,0.05); }

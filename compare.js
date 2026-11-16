@@ -13,7 +13,8 @@
   });
   CFG.metrics.forEach(function (m) { metricByCol[m.col] = m; });
 
-  var state = { group: groups[0], selected: [], slots: {}, metrics: CFG.defaults.slice(), year: "all", started: false };
+  var state = { group: groups[0], selected: [], slots: {}, metrics: CFG.defaults.slice(), year: "all", started: false,
+                mode: "daily", volYear: null };
   var loading = {}, failed = {}, plotlyStatus = window.Plotly ? "ready" : "idle";
 
   function $(id) { return document.getElementById(id); }
@@ -265,7 +266,8 @@
       var cb = h("input", { type: "checkbox", "data-key": "metric:" + m.col, style: "accent-color:" + T.label });
       cb.checked = on;
       cb.addEventListener("change", function () { toggleMetric(m.col); });
-      metBox.appendChild(h("label", { class: "tu-chip" + (on ? " is-on" : "") }, [cb, h("span", { text: m.label })]));
+      metBox.appendChild(h("label", { class: "tu-chip" + (on ? " is-on" : ""),
+        title: m.description ? m.label + ": " + m.description : null }, [cb, h("span", { text: m.checkboxLabel || m.label })]));
     });
     $("tu-cmp-metrics-field").hidden = avail.length === 0;
 
@@ -495,7 +497,8 @@
       return;
     }
     metrics.forEach(function (m) {
-      var sec = h("section", { class: "tu-stat" }, [h("h3", { text: m.label + ", " + yr.label })]);
+      var sec = h("section", { class: "tu-stat" }, [h("h3", { text: m.label + ", " + yr.label }),
+        m.description ? h("p", { class: "tu-stat-def", text: m.short + ": " + m.description }) : null]);
       sec.appendChild(h("div", { class: "tu-stat-head" },
         [h("span", { text: "Site" }), h("span", { text: "Latest" }), h("span", { text: "Min" }), h("span", { text: "Max" })]));
       // Only sites that measure this metric at all (a well isn't listed under
@@ -521,6 +524,159 @@
     });
   }
 
+  // ---- monthly volume mode (monthly_volume_sheet in the R SETTINGS) ------------
+  // "Show: Monthly volume" swaps the daily lines for one summer's months,
+  // grouped by month with a bar per site, and the summary for each site's
+  // summer total. Only offered when some site has a monthly volume tab.
+  var VOLCFG = CFG.volume || {}, VSUMMER = VOLCFG.summer && VOLCFG.summer.length ? VOLCFG.summer : [6, 7, 8, 9];
+  var VUNIT = VOLCFG.unit || "AF", VUNIT_NAME = VOLCFG.unitName || "acre-feet";
+  var MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July", "August", "September",
+                     "October", "November", "December"];
+  var anyVolume = CFG.sites.some(function (s) { return !!s.hasVolume; });
+  function summerName() {
+    return MONTHS[VSUMMER[0] - 1] + String.fromCharCode(0x2013) + MONTHS[VSUMMER[VSUMMER.length - 1] - 1];
+  }
+  // A site's summer months, from its compare-data.js.
+  function volRows(id) {
+    var d = DATA[id];
+    if (!d || !d.volume) return [];
+    if (!d._vol) {
+      d._vol = d.volume.month.map(function (s, i) {
+        var p = String(s).split("-");
+        return { y: +p[0], m: +p[1], v: d.volume.volume[i], days: d.volume.days[i], of: d.volume.of[i],
+                 prov: !!(d.volume.prov && d.volume.prov[i]) };
+      }).filter(function (r) { return VSUMMER.indexOf(r.m) !== -1 && r.v !== null; });
+    }
+    return d._vol;
+  }
+  function fmtVol(v) { return (v >= 10 ? String(Math.round(v)) : v >= 1 ? v.toFixed(1) : v.toFixed(2)) + " " + VUNIT; }
+  function setModeUi() {
+    if (!anyVolume) state.mode = "daily";
+    $("tu-cmp-mode-field").hidden = !anyVolume;
+    $("tu-cmp-mode-daily").setAttribute("aria-pressed", state.mode === "daily" ? "true" : "false");
+    $("tu-cmp-mode-volume").setAttribute("aria-pressed", state.mode === "volume" ? "true" : "false");
+  }
+
+  function drawVolume(ids, year) {
+    var gd = $("tu-cmp-chart");
+    gd._tuMeta = null;   // no line end labels on this chart
+    var anyPartial = false, anyProv = false;
+    var traces = ids.map(function (id) {
+      var by = {}, color = colorOf(id);
+      volRows(id).forEach(function (r) { if (r.y === year) by[r.m] = r; });
+      var rs = VSUMMER.map(function (m) { return by[m] || null; });
+      rs.forEach(function (r) { if (r && r.days < r.of) anyPartial = true; if (r && r.prov) anyProv = true; });
+      return {
+        type: "bar", name: id,
+        x: VSUMMER.map(function (m) { return MONTH_NAMES[m - 1]; }),
+        y: rs.map(function (r) { return r ? r.v : null; }),
+        marker: { color: color,
+          line: { color: color, width: rs.map(function (r) { return r && r.days < r.of ? 1.5 : 0; }) },
+          pattern: { shape: rs.map(function (r) { return r && r.days < r.of ? "/" : ""; }), size: 7, solidity: 0.35 } },
+        text: rs.map(function (r) { return !r ? "" : r.days < r.of ? r.days + " of " + r.of + " d" : r.prov ? "P" : ""; }),
+        textposition: "outside", cliponaxis: false, textfont: { family: FONT, color: T.text, size: 11 },
+        customdata: rs.map(function (r) {
+          return r ? [r.days + " of " + r.of + " days of data" + (r.days < r.of ? " (partial month)" : ""),
+                      r.prov ? "<br>Provisional" : ""] : ["", ""];
+        }),
+        hovertemplate: "<b>" + id + "</b>, %{x} " + year + "<br>%{y:.1f} " + VUNIT_NAME +
+          "<br>%{customdata[0]}%{customdata[1]}<extra></extra>"
+      };
+    });
+    var box = $("tu-cmp-legend");
+    if (anyPartial) box.appendChild(h("span", null, [h("span", { class: "tu-hatch-swatch", "aria-hidden": "true" }), "Partial month"]));
+    if (anyProv) box.appendChild(h("span", null, ["P = provisional, subject to revision"]));
+    var layout = {
+      height: 460, margin: { l: 90, r: 24, t: 30, b: 56 }, paper_bgcolor: T.bg, plot_bgcolor: T.bg,
+      font: { family: FONT, color: T.text }, barmode: "group", bargap: 0.25, bargroupgap: 0.08,
+      showlegend: false, dragmode: false,
+      hoverlabel: { bgcolor: T.panel, bordercolor: T.border, font: { family: FONT, color: T.text, size: 12 } },
+      xaxis: { type: "category", fixedrange: true, linecolor: T.border, tickfont: { family: FONT, color: T.text, size: 12 } },
+      yaxis: { title: { text: "Volume (" + VUNIT_NAME + ")", font: { family: FONT, color: T.text, size: 12 } },
+               rangemode: "tozero", gridcolor: T.grid, zeroline: false, fixedrange: true,
+               tickfont: { family: FONT, color: T.text, size: 10 } }
+    };
+    gd.style.height = layout.height + "px";
+    Plotly.newPlot(gd, traces, layout, { displaylogo: false, responsive: true, displayModeBar: false });
+  }
+
+  function renderVolumeSummary(ids, year) {
+    var box = $("tu-cmp-summary");
+    box.textContent = "";
+    var sec = h("section", { class: "tu-stat" }, [h("h3", { text: "Summer total by site, " + summerName() + " " + year })]);
+    var sums = ids.map(function (id) {
+      var rs = volRows(id).filter(function (r) { return r.y === year; });
+      return { id: id, n: rs.length, total: rs.reduce(function (a, r) { return a + r.v; }, 0),
+               partial: rs.filter(function (r) { return r.days < r.of; }),
+               prov: rs.some(function (r) { return r.prov; }) };
+    }).sort(function (a, b) { return b.total - a.total; });
+    var maxSum = sums.reduce(function (a, r) { return Math.max(a, r.total); }, 0) || 1;
+    sums.forEach(function (r) {
+      var incomplete = r.partial.length > 0 || r.n < VSUMMER.length, notes = [];
+      if (!r.n) notes.push("No volume data for this summer");
+      else if (r.n < VSUMMER.length) notes.push(r.n + " of " + VSUMMER.length + " summer months have data");
+      r.partial.forEach(function (p) { notes.push(MONTH_NAMES[p.m - 1] + " has " + p.days + " of " + p.of + " days"); });
+      if (r.prov) notes.push("includes provisional months");
+      sec.appendChild(h("div", { class: "tu-vol-row" }, [
+        h("div", { class: "tu-vol-top" }, [
+          h("span", { class: "tu-stat-site", title: byId[r.id].label },
+            [swatch(r.id), h("span", { text: r.id }), h("span", { class: "tu-chip-group", text: byId[r.id].group })]),
+          h("span", { class: "tu-strong", text: r.n ? fmtVol(r.total) : "n/a" })]),
+        h("div", { class: "tu-vol-track" }, [h("div", { class: "tu-vol-bar" + (incomplete ? " is-partial" : ""),
+          style: "--c:" + colorOf(r.id) + ";width:" + (r.total / maxSum * 100).toFixed(1) + "%" })]),
+        notes.length ? h("span", { class: "tu-vol-sub", text: notes.join("; ") }) : null]));
+    });
+    sec.appendChild(h("p", { class: "tu-stat-note",
+      text: "Largest first. A total with missing days or months is low for that reason, so it isn't comparable with the others." }));
+    box.appendChild(sec);
+  }
+
+  function renderVolume() {
+    $("tu-cmp-metrics-field").hidden = true;
+    var sel = state.selected;
+    sel.forEach(ensureData);
+    var loaded = sel.filter(function (id) { return !!DATA[id]; });
+    var withVol = loaded.filter(function (id) { return volRows(id).length > 0; });
+    var years = [];
+    withVol.forEach(function (id) { volRows(id).forEach(function (r) { if (years.indexOf(r.y) === -1) years.push(r.y); }); });
+    years.sort(function (a, b) { return b - a; });
+    // Open on the latest summer that the most of these sites have data for.
+    if (years.indexOf(state.volYear) === -1) {
+      var best = null, bestCount = 0;
+      years.forEach(function (y) {
+        var count = withVol.filter(function (id) { return volRows(id).some(function (r) { return r.y === y; }); }).length;
+        if (count > bestCount) { best = y; bestCount = count; }
+      });
+      state.volYear = best;
+    }
+    var ys = $("tu-cmp-year");
+    ys.textContent = "";
+    years.forEach(function (y) { ys.appendChild(h("option", { value: "s" + y, text: "Summer " + y })); });
+    if (state.volYear !== null) ys.value = "s" + state.volYear;
+
+    $("tu-cmp-title").textContent = sel.length
+      ? "Summer volume by site, " + summerName() + (state.volYear !== null ? " " + state.volYear : "") : "Compare sites";
+    var without = loaded.filter(function (id) { return withVol.indexOf(id) === -1; });
+    $("tu-cmp-notes").textContent = sel.filter(function (id) { return failed[id]; })
+      .map(function (id) { return "Couldn't load the data for " + id + "."; })
+      .concat(without.length ? ["No monthly volume for " + without.join(", ") + "."] : []).join(" ");
+
+    var problem = null;
+    if (!sel.length) problem = "Tick up to " + MAX + " sites to compare. Use the Watershed list to add sites from other watersheds.";
+    else if (plotlyStatus === "failed") problem = "The chart library (lib/plotly.min.js) couldn't be loaded.";
+    else if (plotlyStatus !== "ready" || sel.some(function (id) { return !DATA[id] && !failed[id]; })) problem = "Loading...";
+    else if (!withVol.length) problem = "None of the selected sites have monthly volume data.";
+    if (problem) {
+      showProblem(problem);
+      $("tu-cmp-summary").textContent = "";
+      return;
+    }
+    $("tu-cmp-message").hidden = true;
+    $("tu-cmp-chart").hidden = false;
+    drawVolume(withVol, state.volYear);
+    renderVolumeSummary(withVol, state.volYear);
+  }
+
   // ---- main render -----------------------------------------------------------
   function showProblem(text) {
     $("tu-cmp-chart").hidden = true;
@@ -544,6 +700,8 @@
     }
     renderLegend();
     updateHash();
+    setModeUi();
+    if (state.mode === "volume") { renderVolume(); return; }
 
     var sel = state.selected;
     sel.forEach(ensureData);
@@ -601,7 +759,13 @@
   $("tu-tab-single").addEventListener("click", function () { showView("single"); });
   $("tu-tab-compare").addEventListener("click", function () { showView("compare"); });
   $("tu-cmp-group").addEventListener("change", function (e) { state.group = e.target.value; render(); });
-  $("tu-cmp-year").addEventListener("change", function (e) { state.year = e.target.value; render(); });
+  $("tu-cmp-year").addEventListener("change", function (e) {
+    if (state.mode === "volume") state.volYear = +String(e.target.value).slice(1);
+    else state.year = e.target.value;
+    render();
+  });
+  $("tu-cmp-mode-daily").addEventListener("click", function () { state.mode = "daily"; render(); });
+  $("tu-cmp-mode-volume").addEventListener("click", function () { state.mode = "volume"; render(); });
 
   // A link ending in #compare=AP01,SC02 opens straight to that comparison.
   var m = /^#compare(?:=(.*))?$/.exec(location.hash);
